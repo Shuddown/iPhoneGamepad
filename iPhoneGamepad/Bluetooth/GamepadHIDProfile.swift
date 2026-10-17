@@ -1,8 +1,8 @@
 import CoreBluetooth
 import Foundation
 
-/// The emulator-tested Xbox BLE wire profile. No keyboard or pointer collections.
-enum HIDProfile {
+/// GATT services and Xbox-compatible HID reports published by the gamepad.
+enum GamepadHIDProfile {
     static let inputReportID: UInt8 = 1
     static let outputReportID: UInt8 = 3
     // Full canonical UUIDs preserve the tested iOS service-publication behavior.
@@ -26,7 +26,7 @@ enum HIDProfile {
     static let reportMapData = XboxBLEProfile.descriptor
 }
 
-enum ReportType: UInt8 {
+enum GamepadReportType: UInt8 {
     case input = 1
     case output = 2
 }

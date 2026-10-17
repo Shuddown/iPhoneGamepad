@@ -1,33 +1,66 @@
 import SwiftUI
 import UIKit
 
-struct GamepadSurface: UIViewRepresentable {
+struct GamepadTouchSurface: UIViewRepresentable {
     var resetToken: Int
     var haptics: Bool
+    var forgiving = false
+    var configuration = GamepadLayoutConfiguration()
+    var editTool: GamepadEditTool? = nil
+    var selectedControl: GamepadControl = .a
+    var onEdit: (GamepadLayoutConfiguration, GamepadControl) -> Void = { _, _ in }
     var onReport: (GamepadReport) -> Void
 
-    func makeUIView(context: Context) -> GamepadSurfaceView {
-        let view = GamepadSurfaceView()
+    func makeUIView(context: Context) -> GamepadTouchSurfaceView {
+        let view = GamepadTouchSurfaceView()
         view.onReport = onReport
         return view
     }
 
-    func updateUIView(_ view: GamepadSurfaceView, context: Context) {
+    func updateUIView(_ view: GamepadTouchSurfaceView, context: Context) {
         view.onReport = onReport
         view.haptics = haptics
+        if view.forgiving != forgiving {
+            view.releaseAll()
+            view.forgiving = forgiving
+        }
+        view.onEdit = onEdit
+        view.selectedControl = selectedControl
+        view.editTool = editTool
+        if view.configuration != configuration {
+            view.configuration = configuration
+            view.setNeedsLayout()
+        }
+        view.setNeedsDisplay()
         if view.resetToken != resetToken {
             view.resetToken = resetToken
             view.releaseAll(emit: false)
         }
     }
 
-    static func dismantleUIView(_ view: GamepadSurfaceView, coordinator: ()) { view.releaseAll() }
+    static func dismantleUIView(_ view: GamepadTouchSurfaceView, coordinator: ()) { view.releaseAll() }
 }
 
-final class GamepadSurfaceView: UIView {
+final class GamepadTouchSurfaceView: UIView {
     var onReport: (GamepadReport) -> Void = { _ in }
     var haptics = true
+    var forgiving = false
     var resetToken = 0
+    var configuration = GamepadLayoutConfiguration()
+    var editTool: GamepadEditTool? {
+        didSet {
+            if oldValue != editTool {
+                releaseAll(emit: false)
+                setNeedsLayout()
+            }
+        }
+    }
+    var selectedControl: GamepadControl = .a
+    var onEdit: (GamepadLayoutConfiguration, GamepadControl) -> Void = { _, _ in }
+    private var editTouch: ObjectIdentifier?
+    private var editOrigin = CGPoint.zero
+    private var editFrame = CGRect.zero
+    private var editScale: CGFloat = 1
     private var input = GamepadInputState()
     private var layout = GamepadLayout(bounds: .zero)
     private var nextID = 0
@@ -54,12 +87,13 @@ final class GamepadSurfaceView: UIView {
             releaseAll()
         }
         let safeBounds = bounds.inset(by: safeAreaInsets).insetBy(dx: 12, dy: 10)
-        layout = GamepadLayout(bounds: safeBounds)
+        layout = GamepadLayout(bounds: safeBounds, configuration: configuration)
         rebuildAccessibility()
         setNeedsDisplay()
     }
 
     func releaseAll(emit: Bool = true) {
+        editTouch = nil
         owners.removeAll()
         input.reset()
         if emit { onReport(.zero) }
@@ -67,10 +101,29 @@ final class GamepadSurfaceView: UIView {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if editTool != nil {
+            guard editTouch == nil, let touch = touches.first else { return }
+            let point = touch.location(in: self)
+            let hit =
+                layout.frames[selectedControl]?.contains(point) == true ? selectedControl : layout.control(at: point)
+            guard let control = hit, let frame = layout.frames[control] else { return }
+            selectedControl = control
+            editTouch = ObjectIdentifier(touch)
+            editOrigin = point
+            editFrame = frame
+            editScale = configuration.controls[control.rawValue]?.scale ?? 1
+            onEdit(configuration, control)
+            setNeedsDisplay()
+            return
+        }
         for touch in touches {
             let point = touch.location(in: self)
-            guard let control = layout.control(at: point) else { continue }
-            if [.leftStick, .rightStick, .dpad].contains(control), owners.values.contains(where: { $0.control == control }) { continue }
+            guard let control = layout.control(at: point, forgiving: forgiving) else { continue }
+            if [.leftStick, .rightStick, .dpad].contains(control),
+                owners.values.contains(where: { $0.control == control })
+            {
+                continue
+            }
             nextID += 1
             owners[ObjectIdentifier(touch)] = (nextID, control, point)
             update(touch)
@@ -80,6 +133,29 @@ final class GamepadSurfaceView: UIView {
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let editTool {
+            guard let touch = touches.first(where: { ObjectIdentifier($0) == editTouch }) else { return }
+            let point = touch.location(in: self)
+            let delta = CGPoint(x: point.x - editOrigin.x, y: point.y - editOrigin.y)
+            var center = CGPoint(x: editFrame.midX, y: editFrame.midY)
+            var scale = editScale
+            if editTool == .move {
+                center.x += delta.x
+                center.y += delta.y
+            } else {
+                scale = min(2, max(0.6, editScale * (1 + (delta.x - delta.y) / 150)))
+            }
+            configuration.place(selectedControl, center: center, scale: scale, in: layout.bounds)
+            // Persist the resolved center rather than a position beyond the screen edge.
+            let resolved = GamepadLayout(bounds: layout.bounds, configuration: configuration)
+            if let frame = resolved.frames[selectedControl] {
+                configuration.place(
+                    selectedControl, center: CGPoint(x: frame.midX, y: frame.midY), scale: scale, in: layout.bounds)
+            }
+            onEdit(configuration, selectedControl)
+            setNeedsLayout()
+            return
+        }
         touches.forEach(update)
         publish()
     }
@@ -88,6 +164,10 @@ final class GamepadSurfaceView: UIView {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { end(touches) }
 
     private func end(_ touches: Set<UITouch>) {
+        if editTool != nil {
+            if touches.contains(where: { ObjectIdentifier($0) == editTouch }) { editTouch = nil }
+            return
+        }
         for touch in touches {
             if let owner = owners.removeValue(forKey: ObjectIdentifier(touch)) { input.remove(owner.id) }
         }
@@ -98,18 +178,21 @@ final class GamepadSurfaceView: UIView {
         let key = ObjectIdentifier(touch)
         guard var owner = owners[key], let frame = layout.frames[owner.control] else { return }
         let point = touch.location(in: self)
-        if owner.control.isFaceButton, let next = layout.control(at: point), next.isFaceButton {
-            owner.control = next
-            owners[key] = owner
+        if owner.control.isFaceButton, let next = layout.control(at: point, forgiving: forgiving), next.isFaceButton {
+            // Hysteresis keeps small thumb movements from flickering between neighbors.
+            if !forgiving || next == owner.control
+                || layout.distance(to: next, from: point) + 8 < layout.distance(to: owner.control, from: point)
+            {
+                owner.control = next
+                owners[key] = owner
+            }
         }
         var contact = GamepadContact(control: owner.control)
         switch owner.control {
         case .leftStick, .rightStick:
-            let travel = frame.width * 0.32
-            let x = (point.x - frame.midX) / travel
-            let y = (point.y - frame.midY) / travel
-            let magnitude = max(1, hypot(x, y))
-            contact.x = x / magnitude; contact.y = y / magnitude
+            contact = GamepadInputState.stickContact(
+                owner.control, point: point, frame: frame,
+                origin: owner.origin, floating: forgiving)
         case .dpad:
             contact.x = (point.x - frame.midX) / (frame.width / 2)
             contact.y = (point.y - frame.midY) / (frame.height / 2)
@@ -117,7 +200,9 @@ final class GamepadSurfaceView: UIView {
             // Full press at touch-down. Pull down to feather the analog trigger.
             contact.pressure = max(0, min(1, 1 - (point.y - owner.origin.y) / 110))
         default:
-            guard layout.frames[owner.control]?.insetBy(dx: -18, dy: -18).contains(point) == true else {
+            let menuKey = [GamepadControl.home, .start, .select].contains(owner.control)
+            let margin: CGFloat = forgiving && !menuKey ? 36 : 18
+            guard layout.frames[owner.control]?.insetBy(dx: -margin, dy: -margin).contains(point) == true else {
                 input.remove(owner.id)
                 return
             }
@@ -126,6 +211,7 @@ final class GamepadSurfaceView: UIView {
     }
 
     private func publish() {
+        guard editTool == nil else { return }
         onReport(input.report)
         setNeedsDisplay()
     }
@@ -143,6 +229,12 @@ final class GamepadSurfaceView: UIView {
         }
         for control in GamepadControl.allCases {
             guard let frame = layout.frames[control] else { continue }
+            if editTool != nil {
+                let outline = UIBezierPath(roundedRect: frame.insetBy(dx: -3, dy: -3), cornerRadius: 12)
+                (control == selectedControl ? accent : UIColor.white.withAlphaComponent(0.25)).setStroke()
+                outline.lineWidth = control == selectedControl ? 3 : 1
+                outline.stroke()
+            }
             switch control {
             case .leftStick, .rightStick: drawStick(control, in: frame)
             case .dpad: drawDpad(in: frame)
@@ -151,49 +243,68 @@ final class GamepadSurfaceView: UIView {
         }
     }
 
-    private func drawStick(_ control: GamepadControl, in frame: CGRect) {
+    private func drawStick(_ control: GamepadControl, in originalFrame: CGRect) {
+        var frame = originalFrame
+        if forgiving, let owner = owners.values.first(where: { $0.control == control }) {
+            frame = frame.offsetBy(dx: owner.origin.x - frame.midX, dy: owner.origin.y - frame.midY)
+        }
         let report = input.report
         let x = Double(control == .leftStick ? report.leftX : report.rightX) / 127
         let y = Double(control == .leftStick ? report.leftY : report.rightY) / 127
         let active = input.contacts.values.contains { $0.control == control }
         let rim = UIBezierPath(ovalIn: frame)
-        ink.setFill(); rim.fill()
+        ink.setFill()
+        rim.fill()
         (active ? accent.withAlphaComponent(0.65) : UIColor.white.withAlphaComponent(0.14)).setStroke()
-        rim.lineWidth = 1.5; rim.stroke()
+        rim.lineWidth = 1.5
+        rim.stroke()
         let inner = frame.insetBy(dx: 11, dy: 11)
         UIColor.white.withAlphaComponent(0.035).setStroke()
         UIBezierPath(ovalIn: inner).stroke()
         let travel = frame.width * 0.28
-        let knob = CGRect(x: frame.midX + x * travel - frame.width * 0.22,
-                          y: frame.midY + y * travel - frame.height * 0.22,
-                          width: frame.width * 0.44, height: frame.height * 0.44)
+        let knob = CGRect(
+            x: frame.midX + x * travel - frame.width * 0.22,
+            y: frame.midY + y * travel - frame.height * 0.22,
+            width: frame.width * 0.44, height: frame.height * 0.44)
         let cap = UIBezierPath(ovalIn: knob)
-        UIColor(red: 0.21, green: 0.24, blue: 0.29, alpha: 1).setFill(); cap.fill()
-        UIColor.white.withAlphaComponent(active ? 0.32 : 0.18).setStroke(); cap.stroke()
-        drawText(control == .leftStick ? "L" : "R", in: knob, font: .systemFont(ofSize: 15, weight: .medium), color: .white.withAlphaComponent(0.55))
+        UIColor(red: 0.21, green: 0.24, blue: 0.29, alpha: 1).setFill()
+        cap.fill()
+        UIColor.white.withAlphaComponent(active ? 0.32 : 0.18).setStroke()
+        cap.stroke()
+        drawText(
+            control == .leftStick ? "L" : "R", in: knob, font: .systemFont(ofSize: 15, weight: .medium),
+            color: .white.withAlphaComponent(0.55))
     }
 
     private func drawDpad(in frame: CGRect) {
         let third = frame.width / 3
         let path = UIBezierPath()
-        let points = [CGPoint(x: third, y: 0), CGPoint(x: third * 2, y: 0),
-                      CGPoint(x: third * 2, y: third), CGPoint(x: third * 3, y: third),
-                      CGPoint(x: third * 3, y: third * 2), CGPoint(x: third * 2, y: third * 2),
-                      CGPoint(x: third * 2, y: third * 3), CGPoint(x: third, y: third * 3),
-                      CGPoint(x: third, y: third * 2), CGPoint(x: 0, y: third * 2),
-                      CGPoint(x: 0, y: third), CGPoint(x: third, y: third)]
+        let points = [
+            CGPoint(x: third, y: 0), CGPoint(x: third * 2, y: 0),
+            CGPoint(x: third * 2, y: third), CGPoint(x: third * 3, y: third),
+            CGPoint(x: third * 3, y: third * 2), CGPoint(x: third * 2, y: third * 2),
+            CGPoint(x: third * 2, y: third * 3), CGPoint(x: third, y: third * 3),
+            CGPoint(x: third, y: third * 2), CGPoint(x: 0, y: third * 2),
+            CGPoint(x: 0, y: third), CGPoint(x: third, y: third),
+        ]
         for (index, point) in points.enumerated() {
             let p = CGPoint(x: point.x + frame.minX, y: point.y + frame.minY)
             if index == 0 { path.move(to: p) } else { path.addLine(to: p) }
         }
         path.close()
-        ink.setFill(); path.fill()
-        UIColor.white.withAlphaComponent(0.2).setStroke(); path.lineWidth = 1.5; path.stroke()
+        ink.setFill()
+        path.fill()
+        UIColor.white.withAlphaComponent(0.2).setStroke()
+        path.lineWidth = 1.5
+        path.stroke()
         let hat = input.report.hat
         for (index, symbol, dx, dy) in [(0, "▲", 1, 0), (2, "▶", 2, 1), (4, "▼", 1, 2), (6, "◀", 0, 1)] {
             let active = hat < 8 && ((Int(hat) - index + 8) % 8 <= 1 || (index - Int(hat) + 8) % 8 <= 1)
-            let cell = CGRect(x: frame.minX + CGFloat(dx) * third, y: frame.minY + CGFloat(dy) * third, width: third, height: third)
-            drawText(symbol, in: cell, font: .systemFont(ofSize: 13, weight: .bold), color: active ? accent : .white.withAlphaComponent(0.5))
+            let cell = CGRect(
+                x: frame.minX + CGFloat(dx) * third, y: frame.minY + CGFloat(dy) * third, width: third, height: third)
+            drawText(
+                symbol, in: cell, font: .systemFont(ofSize: 13, weight: .bold),
+                color: active ? accent : .white.withAlphaComponent(0.5))
         }
     }
 
@@ -207,17 +318,21 @@ final class GamepadSurfaceView: UIView {
         case .y: color = UIColor(red: 0.98, green: 0.80, blue: 0.39, alpha: 1)
         default: color = .white.withAlphaComponent(0.7)
         }
-        let path = control.isFaceButton || control == .home
+        let path =
+            control.isFaceButton || control == .home
             ? UIBezierPath(ovalIn: frame)
             : UIBezierPath(roundedRect: frame, cornerRadius: control == .l3 || control == .r3 ? 18 : 14)
-        (active ? color.withAlphaComponent(0.22) : ink).setFill(); path.fill()
+        (active ? color.withAlphaComponent(0.22) : ink).setFill()
+        path.fill()
         (active ? color : UIColor.white.withAlphaComponent(0.16)).setStroke()
-        path.lineWidth = active ? 2 : 1; path.stroke()
+        path.lineWidth = active ? 2 : 1
+        path.stroke()
         if control == .l2 || control == .r2 {
             let value = Double(control == .l2 ? input.report.leftTrigger : input.report.rightTrigger) / 255
             if value > 0 {
                 let meter = CGRect(x: frame.minX + 12, y: frame.maxY - 7, width: (frame.width - 24) * value, height: 2)
-                accent.setFill(); UIBezierPath(roundedRect: meter, cornerRadius: 1).fill()
+                accent.setFill()
+                UIBezierPath(roundedRect: meter, cornerRadius: 1).fill()
             }
         }
         let label: String
@@ -227,7 +342,8 @@ final class GamepadSurfaceView: UIView {
         case .home: label = "⌂"
         default: label = control.label
         }
-        let size: CGFloat = control.isFaceButton ? 23 : (control == .select || control == .start || control == .home ? 22 : 14)
+        let size: CGFloat =
+            control.isFaceButton ? 23 : (control == .select || control == .start || control == .home ? 22 : 14)
         drawText(label, in: frame, font: .systemFont(ofSize: size, weight: .semibold), color: color)
     }
 
@@ -251,17 +367,27 @@ final class GamepadSurfaceView: UIView {
     }
 
     private func accessibilityPress(_ control: GamepadControl) {
+        if editTool != nil {
+            selectedControl = control
+            onEdit(configuration, control)
+            setNeedsDisplay()
+            return
+        }
         nextID += 1
         let id = nextID
         input.set(GamepadContact(control: control, x: control == .dpad ? 1 : 0), for: id)
         publish()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.input.remove(id); self?.publish()
+            self?.input.remove(id)
+            self?.publish()
         }
     }
 }
 
 private final class GamepadAccessibilityElement: UIAccessibilityElement {
     var activate: (() -> Void)?
-    override func accessibilityActivate() -> Bool { activate?(); return true }
+    override func accessibilityActivate() -> Bool {
+        activate?()
+        return true
+    }
 }

@@ -1,78 +1,177 @@
 # iPhone Gamepad
 
-A dedicated landscape Bluetooth gamepad for iPhone. Connect to your Mac from
-inside the app, then use the phone as an Xbox-compatible controller in games
-and emulators. No desktop receiver or virtual controller driver is needed.
+[![CI](https://github.com/Shuddown/iPhoneGamepad/actions/workflows/ci.yml/badge.svg)](https://github.com/Shuddown/iPhoneGamepad/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
-The emulator-tested starting point is preserved in commit `a6cf028`.
+Turn an iPhone into a landscape Bluetooth gamepad for your Mac. The phone sends
+Xbox-compatible controller reports directly to macOS's built-in controller
+support. **Keep the app open on the iPhone; no companion Mac app or virtual
+controller driver is needed.**
 
-## Controls
+![Landscape gamepad with two thumbsticks, a D-pad, face buttons, and shoulder controls](docs/gamepad.png)
 
-- D-pad and A/B/X/Y at the outer edges; two lower, inward thumbsticks.
-- Shoulder buttons across the top, with Select, Start, Home, L3, and R3.
-- L2/R2 press fully when touched; drag down to feather their analog values.
-- A single sliding D-pad touch supports all eight directions.
-- Simultaneous touches preserve held buttons and both sticks. Lifting,
-  cancellation, opening settings, or leaving the app releases the controls.
-- All controls respect the landscape safe area and have at least 44-point targets.
+## Features
 
-Tap **Connect** at the top to scan for your Mac, connect, and adjust touch
-feedback. The iPhone does not have to appear in the Mac's normal Bluetooth list.
-The app prevents automatic screen sleep while playing.
+- Two independently tracked thumbsticks, eight-way D-pad, A/B/X/Y, shoulders,
+  analog triggers, Select, Start, Home, and stick-click buttons.
+- Multi-touch controls with neutral input on release, cancellation, or leaving
+  active gameplay.
+- A layout editor for moving and resizing controls, with Save, Cancel, and reset.
+- Optional **Forgiving** input: nearby-target snapping, floating stick centers,
+  and reduced jitter when sliding between face buttons.
+- Optional touch feedback, landscape safe-area layout, and automatic screen-sleep prevention.
+- Direct Bluetooth LE communication with the host.
 
-The design follows the on-screen control arrangements in Moonlight iOS and
-PPSSPP. See [layout references](docs/LAYOUT-REFERENCES.md).
+## Compatibility and project status
 
-## Build
+This is an experimental native iPhone app, built from source and installed with
+Xcode. There is no packaged app release yet.
 
-Requires Xcode and XcodeGen. The app targets iOS 16 or later; physical-device
-Bluetooth testing has been performed on an iPhone 15 with iOS 27.0.1 and a Mac
-with macOS 27.0.1.
+| Component | Status |
+|---|---|
+| iPhone | Targets iOS 16+. Physical Bluetooth validation recorded on iPhone 15, iOS 27.0.1. |
+| macOS host | Tested on macOS 27.0.1 with native Game Controller input and emulator gameplay. |
+| Windows host | Not tested. Windows Bluetooth LE HID support alone does not establish compatibility with this implementation. |
+| Linux, Android, and other hosts | Not tested. |
+| Layout editor / Forgiving mode | Builds and core logic tests pass; touch accuracy and comfort need broader hands-on testing. |
+
+The app relies on **undocumented iOS HID service-publication behavior** and an
+Xbox-compatible descriptor and device identity. The tested hardware/OS pair
+establishes feasibility, not compatibility with every release or game. App Store
+eligibility has not been established. Rumble commands are accepted but not
+rendered, and gyro input is not implemented.
+
+See the [physical-device evidence](docs/PROTOTYPE-VALIDATION.md) and
+[layout/touch validation notes](docs/TOUCH-MODES-VALIDATION.md).
+
+## Build and install
+
+You need a Mac with Xcode and its iOS platform tools, XcodeGen, an Apple signing
+team, and a physical iPhone with Developer Mode enabled. Development has been
+validated with Xcode 27; CI builds with Xcode 26.6. The source uses Swift 6.
+A simulator can build the UI but does not establish physical Bluetooth HID behavior.
 
 ```sh
+git clone https://github.com/Shuddown/iPhoneGamepad.git
+cd iPhoneGamepad
+brew install xcodegen
 xcodegen generate
 open iPhoneGamepad.xcodeproj
 ```
 
-Select your development team and connected iPhone in Xcode. The bundle identifier
-is unchanged from the tested prototype (`com.shudhesh.iphonegamepad`), preserving
-its installation and permissions. For a command-line device build:
+In Xcode:
+
+1. Select the **iPhoneGamepad** target and open **Signing & Capabilities**.
+2. Select your development team and change the bundle identifier to one unique
+   to you, for example `com.yourname.iphonegamepad`.
+3. Select your connected physical iPhone and run the **iPhoneGamepad** scheme.
+4. Allow Bluetooth access when prompted.
+
+For repeatable personal builds, change `PRODUCT_BUNDLE_IDENTIFIER` and
+`DEVELOPMENT_TEAM` in your local `project.yml` before generating the project.
+Do not commit your signing details. The checked-in default bundle identifier is
+retained for existing development installations; it is not a shared signing identity.
+The Xcode project is generated and intentionally excluded from Git.
+
+You can also build and install from the command line:
 
 ```sh
 xcodebuild -project iPhoneGamepad.xcodeproj -scheme iPhoneGamepad \
   -configuration Debug -destination 'id=YOUR_IPHONE_UDID' \
   -derivedDataPath .build/device -allowProvisioningUpdates \
-  DEVELOPMENT_TEAM=YOUR_TEAM_ID build
+  DEVELOPMENT_TEAM=YOUR_TEAM_ID \
+  PRODUCT_BUNDLE_IDENTIFIER=com.yourname.iphonegamepad build
+
 xcrun devicectl device install app --device YOUR_IPHONE_UDID \
   .build/device/Build/Products/Debug-iphoneos/iPhoneGamepad.app
 ```
 
-## Verify
+## Connect and play
+
+1. Open the app on the iPhone and tap **Connect**.
+2. Scan for your Mac and select it. Accept any system pairing prompts.
+3. Return to the gamepad. **Connected** means a host has subscribed to the input report.
+4. Open a controller-enabled game or emulator on the Mac and select/configure
+   its controller if needed.
+
+**Use the iPhone app's connection flow.** The iPhone did not appear in the Mac's
+normal Bluetooth device list during testing; that list is not required.
+The Mac diagnostic tools in this repository are optional and can remain closed
+while playing. USB is used for development installation, not controller input.
+
+L2/R2 press fully at touch-down; drag down to reduce their analog value.
+L3/R3 send stick-click button presses. Keep the app foreground while playing.
+
+## Customize the controls
+
+Tap the **sliders icon** beside Connect to open the layout editor. Choose
+**Move** or **Resize**, then drag a control. The control menu also lets you select,
+resize, or reset an individual control. **Save** persists the layout;
+**Cancel** discards the draft, and **Reset all** restores the defaults in the draft.
+Gameplay input is paused while editing.
+
+![Layout editor showing Move and Resize modes and the selected A button](docs/layout-editor.png)
+
+Tap **Standard** to switch to **Forgiving**, and tap again to return. Forgiving
+assigns small misses to nearby gameplay targets and starts each stick at its
+initial touch position. Home, Start, and Select keep their precise targets.
+The mode and saved layout persist across launches. Custom controls can overlap;
+leave space between controls you need to press independently.
+
+Read the [touch-mode behavior and research](docs/TOUCH-MODES.md) for the initial
+snap distances, tradeoffs, and other interaction ideas. Layout inspiration is
+credited in [layout references](docs/LAYOUT-REFERENCES.md).
+
+## How it works
+
+The app constructs a HID-over-GATT service using CoreBluetooth. Full canonical
+Bluetooth UUID strings preserve the tested iOS publication behavior. A matching
+Xbox BLE report descriptor, PnP compatibility identity, and input serializer let
+macOS expose the device through its native Game Controller framework.
+
+[Bluetooth architecture](docs/BLUETOOTH.md) explains the service tree,
+connection setup, identity, and implementation limits.
+
+| Directory | Responsibility |
+|---|---|
+| `iPhoneGamepad/App` | App entry point and preferences |
+| `iPhoneGamepad/Controls` | Controls, touch state, layout geometry, and persistence |
+| `iPhoneGamepad/Views` | Gameplay surface, editor, and connection settings |
+| `iPhoneGamepad/Bluetooth` | Host discovery, gamepad publication, reports, and buffering |
+| `Tests` | Executable core tests and selected physical-device evidence |
+| `Tools` | Verification, formatting, and native Mac diagnostics |
+
+## Verify and contribute
 
 ```sh
 bash Tools/verify-gamepad.sh
+bash Tools/format-swift.sh --check
+```
+
+The core tests cover report encoding, descriptor bit counts, input ownership,
+release behavior, D-pad directions, deadzones, layout persistence/clamping,
+forgiving target selection, floating sticks, and report buffering. They do not
+replace physical Bluetooth or game testing.
+
+Optional native Mac diagnostics:
+
+```sh
 .build/validation/GamepadMonitor
 open .build/validation/GameControllerProbe.app
 ```
 
-Tests cover the Xbox BLE packet format, stick ranges, trigger scaling, button
-mapping, touch ownership/release, D-pad diagonals, deadzone behavior, safe-area
-layout sizes, and report buffering. The two Mac tools inspect actual HID and
-Game Controller input, respectively. The tests do not substitute for testing an
-individual game or emulator.
-
-Only gamepad HID collections and characteristics are published. Keyboard,
-mouse, trackpad, media keys, desktop hosting, and Bluetooth Classic code have
-been removed. Rumble output is accepted for protocol compatibility but is not
-rendered; gyro aiming is not implemented.
-
-The transport depends on undocumented iOS HID service-publication behavior and
-uses an Xbox BLE compatibility identity to select macOS's controller driver.
-Successful testing on current hardware is not a guarantee of future OS or App
-Store compatibility. [Prototype test evidence](docs/PROTOTYPE-VALIDATION.md) is
-retained separately from the current product instructions.
+To format the source, run `bash Tools/format-swift.sh`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the unsigned build check and guidance
+for changes to the Bluetooth profile. Bug reports and pull requests are welcome.
 
 ## License and attribution
 
-AGPL-3.0; see [LICENSE](LICENSE). Upstream provenance and MIT notices for the BLE
-report descriptor are preserved in [ThirdParty](ThirdParty).
+[GNU AGPL v3](LICENSE), with the upstream project's AGPL-3.0-only licensing
+retained. The Bluetooth implementation derives from
+[jqssun/darwin-bt-remote](https://github.com/jqssun/darwin-bt-remote). Xbox BLE
+descriptor code retains its MIT notices. Exact source revisions and credits are
+in [ThirdParty/ORIGIN.md](ThirdParty/ORIGIN.md).
+
+This is an independent project and is not affiliated with Apple or Microsoft.
+The Xbox-compatible identity is used for host-driver compatibility.
+The original emulator-tested prototype remains in commit `a6cf028`.

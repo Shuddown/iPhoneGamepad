@@ -2,24 +2,24 @@ import SwiftUI
 
 @main
 struct GamepadApp: App {
-    @StateObject private var peripheral = HIDPeripheral()
-    @StateObject private var central = HIDCentral()
+    @StateObject private var gamepad = GamepadPeripheral()
+    @StateObject private var hostDiscovery = GamepadHostDiscovery()
 
     init() { GamepadSettings.registerDefaults() }
 
     var body: some Scene {
         WindowGroup {
             GamepadView()
-                .environmentObject(peripheral)
-                .environmentObject(central)
+                .environmentObject(gamepad)
+                .environmentObject(hostDiscovery)
                 .preferredColorScheme(.dark)
                 .onAppear {
                     // Register connection events before publishing the HID service.
-                    central.start()
-                    peripheral.start()
+                    hostDiscovery.start()
+                    gamepad.start()
                 }
                 #if DEBUG
-                    .task { await peripheral.runGamepadProbeIfRequested() }
+                    .task { await gamepad.runGamepadProbeIfRequested() }
                 #endif
         }
     }

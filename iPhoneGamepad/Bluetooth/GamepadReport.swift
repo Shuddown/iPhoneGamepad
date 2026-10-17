@@ -36,7 +36,7 @@ struct GamepadReport: Sendable, Equatable {
             mapped |= 1 << target
         }
         append16(mapped)
-        bytes.append(0) // Share button
+        bytes.append(0)  // Share button
         return Data(bytes)
     }
 
@@ -46,28 +46,4 @@ struct GamepadReport: Sendable, Equatable {
         if pressed { buttons |= mask } else { buttons &= ~mask }
     }
 
-
-}
-
-/// Coalesces absolute state separately for each characteristic while BLE is backpressured.
-struct PendingHIDReports<Key: Hashable, Value> {
-    private var order: [Key] = []
-    private var values: [Key: Value] = [:]
-
-    mutating func enqueue(_ value: Value, for key: Key) {
-        if values[key] == nil { order.append(key) }
-        values[key] = value
-    }
-
-    mutating func popFirst() -> (Key, Value)? {
-        guard !order.isEmpty else { return nil }
-        let key = order.removeFirst()
-        guard let value = values.removeValue(forKey: key) else { return nil }
-        return (key, value)
-    }
-
-    mutating func removeAll() {
-        order.removeAll()
-        values.removeAll()
-    }
 }

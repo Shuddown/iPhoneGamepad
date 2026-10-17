@@ -3,8 +3,8 @@
 The Bluetooth service-publication and connection-event implementation began
 with [jqssun/darwin-bt-remote](https://github.com/jqssun/darwin-bt-remote), revision
 `ad7a76ce6132254fbd6085af87cea8d10aa8a82d`, under AGPL-3.0. The project license is
-preserved at the repository root. The original downloaded Git history is also
-retained locally in `.git/upstream-history`.
+preserved at the repository root. The retained prototype commit records the
+starting implementation; the current source is organized as a dedicated gamepad.
 
 The tested prototype snapshot is commit `a6cf028`. The current application
 removes the upstream keyboard, mouse, remote-control UI, Classic transport,

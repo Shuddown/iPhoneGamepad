@@ -2,8 +2,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .build/validation
-swiftc iPhoneGamepad/Bluetooth/GamepadReport.swift iPhoneGamepad/Bluetooth/XboxBLEProfile.swift iPhoneGamepad/Bluetooth/HIDProfile.swift iPhoneGamepad/GamepadLayout.swift Tests/GamepadReportTests.swift -o .build/validation/GamepadReportTests
-.build/validation/GamepadReportTests
+gamepad_sources=(
+  iPhoneGamepad/Bluetooth/GamepadReport.swift
+  iPhoneGamepad/Bluetooth/GamepadReportBuffer.swift
+  iPhoneGamepad/Bluetooth/XboxBLEProfile.swift
+  iPhoneGamepad/Bluetooth/GamepadHIDProfile.swift
+  iPhoneGamepad/Controls/GamepadControl.swift
+  iPhoneGamepad/Controls/GamepadLayout.swift
+  iPhoneGamepad/Controls/GamepadLayoutConfiguration.swift
+  iPhoneGamepad/Controls/GamepadInputState.swift
+  Tests/GamepadCoreTests.swift
+)
+swiftc "${gamepad_sources[@]}" -o .build/validation/GamepadCoreTests
+.build/validation/GamepadCoreTests
 swiftc Tools/GamepadMonitor.swift -o .build/validation/GamepadMonitor
 mkdir -p .build/validation/GameControllerProbe.app/Contents/MacOS
 swiftc Tools/GameControllerProbe.swift -o .build/validation/GameControllerProbe.app/Contents/MacOS/GameControllerProbe

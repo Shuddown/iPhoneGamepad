@@ -5,3 +5,13 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 *.xcresult/
+*.xcarchive/
+*.ipa
+*.dSYM/
+*.p12
+*.p8
+*.mobileprovision
+.env
+.env.*
+*.log
+!Tests/DEVICE-VALIDATION.log

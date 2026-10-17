@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Core tests and iOS build
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Install XcodeGen
+        run: brew list --versions xcodegen >/dev/null || brew install xcodegen
+      - name: Check Swift formatting
+        run: bash Tools/format-swift.sh --check
+      - name: Run core tests and build Mac diagnostics
+        run: bash Tools/verify-gamepad.sh
+      - name: Check metadata and whitespace
+        run: |
+          plutil -lint iPhoneGamepad/Info.plist iPhoneGamepad/PrivacyInfo.xcprivacy
+          git diff --check
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build iOS app without signing
+        run: |
+          xcodebuild -project iPhoneGamepad.xcodeproj -scheme iPhoneGamepad \
+            -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath .build/ci \
+            CODE_SIGNING_ALLOWED=NO build

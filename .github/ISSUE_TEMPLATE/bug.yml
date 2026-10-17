@@ -1,0 +1,30 @@
+name: Bug report
+description: Report a reproducible controller, connection, or layout problem.
+title: "[Bug]: "
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include iPhone model, iOS version, host OS, app commit, and game/emulator. Omit device identifiers and signing details.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include how you connected and whether Standard or Forgiving mode was active.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+      description: For connection issues, distinguish discovery, pairing, report subscription, and changing inputs.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Additional evidence
+      description: Optional screenshots or relevant diagnostic output, with personal information removed.
