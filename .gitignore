@@ -1,7 +1,7 @@
 .DS_Store
-/gamepad-extension.patch
 .build/
 DerivedData/
 *.xcodeproj/
 *.xcuserstate
 xcuserdata/
+*.xcresult/
