@@ -1,0 +1,35 @@
+name: Report
+description: Report a bug or suggest a feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Important
+        Before reporting a new issue, please check if it already exists in the [issue tracker](https://github.com/jqssun/darwin-bt-remote/issues).
+        
+        We aim to keep things fast, lightweight, and responsive for pairing and general use across all platforms. If you notice any performance issues, please attach logs from both the host and target devices if possible.
+   
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Verification
+      description: Please verify the following before submitting.
+      options:
+        - label: I have checked the issue tracker and I confirm this is NOT a known issue in this project.
+          required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Please provide the app version installed on the host device, as well as the device model and operating system version for both the host and target devices if possible.
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what the issue is.
+    validations:
+      required: true

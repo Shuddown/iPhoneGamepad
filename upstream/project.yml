@@ -1,0 +1,56 @@
+name: BTRemote
+options:
+  bundleIdPrefix: io.github.jqssun
+  deploymentTarget:
+    iOS: "15.0"
+    macOS: "13.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+  xcodeVersion: "15.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    ENABLE_PREVIEWS: YES
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    MARKETING_VERSION: "0.0.4"
+    CURRENT_PROJECT_VERSION: "4"
+
+targets:
+  BTRemote:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: BTRemote
+        excludes:
+          - entitlements.plist
+      - path: BTRemote/entitlements.plist
+        buildPhase: none
+    resources:
+      - BTRemote/Assets.xcassets
+      - BTRemote/PrivacyInfo.xcprivacy
+      - BTRemote/Resources/company_ids.json
+      - BTRemote/Resources/service_uuids.json
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.jqssun.btremote
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: BTRemote/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": BTRemote/entitlements.plist
+schemes:
+  BTRemote:
+    build:
+      targets:
+        BTRemote: all
+    run:
+      config: Debug
+    archive:
+      config: Release

@@ -1,0 +1,21 @@
+Remote is a fully open-source universal serverless Bluetooth HID remote control that can turn any iPhone, iPad, or Mac into a Bluetooth keyboard, trackpad, and media remote.
+
+It works using HID over GATT and is compatible with all platforms that accept generic Bluetooth input, including:
+- iOS (and iPadOS)
+- macOS
+- tvOS
+- Linux (and SteamOS)
+- Windows
+- ChromeOS
+- Android (and Android TV, Google TV, and Fire OS)
+
+Since it presents itself as a regular Bluetooth keyboard and mouse (HID over GATT), nothing needs to be installed on the device you control. Pair once from the host's Bluetooth settings and start typing.
+
+It features:
+- Trackpad: tap to click, two-finger tap for right click, two-finger scroll, dedicated mouse buttons
+- Keyboard: live typing, supports special keys and modifier keys
+- Media: play/pause, rewind, fast-forward, volume controls, mute
+
+It additionally allows you to scan nearby devices with signal strength and manufacturer information.
+
+Remote is under the AGPL-3.0 license at https://github.com/jqssun/darwin-bt-remote

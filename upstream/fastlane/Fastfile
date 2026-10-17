@@ -1,0 +1,63 @@
+PROJECT = "BTRemote.xcodeproj"
+SCHEME  = "BTRemote"
+APP_ID  = CredentialsManager::AppfileConfig.try_fetch_value(:app_identifier)
+TEAM    = CredentialsManager::AppfileConfig.try_fetch_value(:team_id)
+
+require "match"
+[:print_summary, :print_certificate_info].each do |m|
+  ::Match::TablePrinter.define_singleton_method(m) { |*a, **k| }
+end
+
+default_platform(:ios)
+
+before_all do
+  setup_ci
+end
+
+platform :ios do
+  desc "Build release for iOS App Store"
+  lane :release do
+    match(type: "appstore", readonly: true)
+    profile = configure_signing
+    build_app(
+      project: PROJECT,
+      scheme: SCHEME,
+      sdk: "iphoneos",
+      export_method: "app-store",
+      output_directory: "build",
+      export_options: { provisioningProfiles: { APP_ID => profile } }
+    )
+  end
+end
+
+platform :mac do
+  desc "Build release for macOS App Store"
+  lane :release do
+    match(type: "appstore", platform: "macos", additional_cert_types: ["mac_installer_distribution"], readonly: true)
+    profile = configure_signing
+    build_mac_app(
+      project: PROJECT,
+      scheme: SCHEME,
+      sdk: "macosx",
+      destination: "generic/platform=macOS",
+      export_method: "app-store",
+      output_directory: "build",
+      installer_cert_name: "3rd Party Mac Developer Installer",
+      export_options: { provisioningProfiles: { APP_ID => profile } }
+    )
+  end
+end
+
+private_lane :configure_signing do
+  key  = ENV.keys.find { |k| k.start_with?("sigh_#{APP_ID}_appstore") && k.end_with?("_profile-name") }
+  name = ENV.fetch(key)
+  update_code_signing_settings(
+    path: PROJECT,
+    use_automatic_signing: false,
+    team_id: TEAM,
+    code_sign_identity: "Apple Distribution",
+    profile_name: name,
+    targets: [SCHEME]
+  )
+  name
+end

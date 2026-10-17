@@ -1,0 +1,16 @@
+Physical device test: iPhone 15 / iOS 27.0.1 -> macOS 27.0.1
+Selected stdout from the native GameController probe (not simulated inputs).
+
+GCController connected: Shudhesh’s iPhone, extendedGamepad=true
+GCController connected: Shudhesh’s iPhone, extendedGamepad=true
+GC extended input: A=1.0 B=0.0 left=(0.0,0.0) right=(0.0,0.0) triggers=(0.0,0.0)
+GC extended input: A=0.0 B=0.0 left=(1.0,1.0) right=(0.0,0.0) triggers=(0.0,0.0)
+GC extended input: A=0.0 B=0.0 left=(-0.0,0.0) right=(-1.0,-1.0) triggers=(0.0,0.0)
+GC extended input: A=0.0 B=1.0 left=(-0.0,0.0) right=(-0.0,0.0) triggers=(0.0,0.0)
+GC extended input: A=1.0 B=0.0 left=(-0.0,0.0) right=(-0.0,0.0) triggers=(0.0,0.0)
+
+The explicit Debug probe generated some inputs; user touch input was also verified.
+GC extended input: A=0.0 B=0.0 left=(-0.0,0.0) right=(-0.0,0.0) triggers=(0.0,0.83870965)
+
+Reconnection test:
+GC extended input: A=0.0 B=0.0 left=(-0.0,0.0) right=(-0.0,0.0) triggers=(1.0,0.5014663)

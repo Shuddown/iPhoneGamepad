@@ -1,0 +1,1 @@
+keyboard,mouse,trackpad,touchpad,media,presenter,clicker,tv,pc,controller,wireless,hid,bluetooth
