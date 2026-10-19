@@ -3,106 +3,228 @@ import CoreBluetooth
 import Foundation
 import os
 
-/// Publishes the iPhone as a Bluetooth gamepad and delivers its input reports.
+/// Publishes a separate, independently removable gamepad service for each selected host.
 @MainActor
 final class GamepadPeripheral: NSObject, ObservableObject {
     @Published private(set) var state: CBManagerState = .unknown
     @Published private(set) var isAdvertising = false
-    @Published private(set) var isHIDServiceAdded = false
-    /// central identifier: the set of characteristic UUIDs it is currently subscribed to
-    @Published private(set) var subscribedCentrals: [UUID: Set<CBUUID>] = [:]
-    /// broadcasts skip inactive hosts
-    @Published private(set) var inactiveCentrals: Set<UUID> = []
-    @Published private(set) var connectedCentrals: Set<UUID> = []
+    @Published private(set) var isRunning = false
     @Published private(set) var lastError: String?
     @Published private(set) var batteryLevel: UInt8 = 100
+    /// Only subscriptions to a host's own published gamepad count as connected.
     @Published private(set) var gamepadSubscribers: Set<UUID> = []
-
-    private var centralObjects: [UUID: CBCentral] = [:]
-    private var subscriptions: [UUID: Set<ObjectIdentifier>] = [:]
+    @Published private(set) var requestedHosts: Set<UUID>
+    @Published private(set) var knownHostIDs: Set<UUID>
+    @Published private(set) var observedHostIDs: Set<UUID> = []
 
     var advertiseLocalName: String =
         UserDefaults.standard.string(forKey: GamepadSettings.advertisedNameKey) ?? "iPhone Gamepad"
 
     private let log = Logger(subsystem: "com.shudhesh.iphonegamepad", category: "GamepadPeripheral")
+    private let defaults: UserDefaults
+    private var hasStarted = false
     private var peripheralManager: CBPeripheralManager?
     private var batteryService: CBMutableService?
     private var deviceInformationService: CBMutableService?
-    private var gamepadService: CBMutableService?
-    private var isHIDServiceAllowed = false
+    private var batteryCharacteristic: CBMutableCharacteristic?
+    private var commonServicesReady = false
+    private var withdrawOnPowerOn = false
+    private var hostServices: [UUID: GamepadHostService] = [:]
+    private var centralObjects: [UUID: CBCentral] = [:]
+    private var subscriptions: [ObjectIdentifier: Set<UUID>] = [:]
+    private var latestInput = GamepadReport.zero.data
     private var isReadyToSendNotification = true
-
-    private var reportCharacteristics: [UInt8: CBMutableCharacteristic] = [:]
-    private var batteryLevelCharacteristic: CBMutableCharacteristic?
-    private var serviceChangedService: CBMutableService?
-    private var serviceChangedArmed = false
-    private static let serviceChangedGrace: UInt64 = 2_000_000_000
-
-    /// last-sent payloads for reads and new subscriptions
-    private var cachedReports: [UInt8: Data] = [
-        GamepadHIDProfile.inputReportID: GamepadReport.zero.data,
-        GamepadHIDProfile.outputReportID: Data(repeating: 0, count: 8),
-    ]
-
     private var pendingReports = GamepadReportBuffer<ObjectIdentifier, (Data, CBMutableCharacteristic)>()
 
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        requestedHosts = Set(
+            (defaults.stringArray(forKey: GamepadSettings.connectedHostsKey) ?? []).compactMap(UUID.init(uuidString:)))
+        knownHostIDs = Set(
+            (defaults.stringArray(forKey: GamepadSettings.knownHostsKey) ?? []).compactMap(UUID.init(uuidString:)))
+        super.init()
+        knownHostIDs.formUnion(requestedHosts)
+    }
+
+    func startIfNeeded() {
+        if !hasStarted { start() }
+    }
+
     func start() {
-        isHIDServiceAllowed = true
-        if peripheralManager == nil {
-            peripheralManager = CBPeripheralManager(
-                delegate: self,
-                queue: nil,
-                options: [CBPeripheralManagerOptionShowPowerAlertKey: true]
-            )
-        } else if state == .poweredOn {
-            if isHIDServiceAdded {
-                startAdvertisingNow()
-            } else {
-                installServices()
+        hasStarted = true
+        guard !isRunning else { return }
+        isRunning = true
+        latestInput = GamepadReport.zero.data
+        peripheralManager = CBPeripheralManager(
+            delegate: self, queue: nil,
+            options: [CBPeripheralManagerOptionShowPowerAlertKey: true])
+    }
+
+    func connectHost(_ hostID: UUID) {
+        lastError = nil
+        knownHostIDs.insert(hostID)
+        requestedHosts.insert(hostID)
+        saveHosts()
+        start()
+        publishHostIfNeeded(hostID)
+    }
+
+    /// Remove this host's actual HID service, leaving other hosts' controllers published.
+    func disconnectHost(_ hostID: UUID) {
+        requestedHosts.remove(hostID)
+        saveHosts()
+        if let session = hostServices[hostID] {
+            if session.isPublished {
+                _ = updateValue(GamepadReport.zero.data, for: session.input, owner: hostID)
+                peripheralManager?.remove(session.service)
             }
+            // A pending add is withdrawn in didAddService, even if it arrives late.
+            hostServices.removeValue(forKey: hostID)
+            forgetSubscriptions(for: session)
         }
+        gamepadSubscribers.remove(hostID)
+        trace("controller withdrawn for host: \(hostID)")
     }
 
     func stop() {
         sendGamepad(.zero)
-        isHIDServiceAllowed = false
-        peripheralManager?.stopAdvertising()
-        isAdvertising = false
+        requestedHosts.removeAll()
+        saveHosts()
+        isRunning = false
+        if peripheralManager?.state == .poweredOn {
+            peripheralManager?.stopAdvertising()
+            peripheralManager?.removeAllServices()
+        }
+        peripheralManager?.delegate = nil
+        peripheralManager = nil
+        clearRuntime()
+        trace("all controller services withdrawn")
     }
 
     func promptPowerAlert() {
         guard state != .poweredOn else { return }
-        resetForRestart()
+        peripheralManager?.delegate = nil
+        peripheralManager = nil
+        clearRuntime()
+        isRunning = false
         start()
     }
 
-    private func resetForRestart() {
-        peripheralManager?.stopAdvertising()
-        peripheralManager = nil
-        isAdvertising = false
-        isHIDServiceAdded = false
-        isReadyToSendNotification = true
-        pendingReports.removeAll()
-        batteryService = nil
-        deviceInformationService = nil
-        gamepadService = nil
-        serviceChangedService = nil
-        serviceChangedArmed = false
-        batteryLevelCharacteristic = nil
-        reportCharacteristics.removeAll()
-        subscribedCentrals.removeAll()
-        inactiveCentrals.removeAll()
-        connectedCentrals.removeAll()
+    private func saveHosts() {
+        defaults.set(knownHostIDs.map(\.uuidString).sorted(), forKey: GamepadSettings.knownHostsKey)
+        defaults.set(requestedHosts.map(\.uuidString).sorted(), forKey: GamepadSettings.connectedHostsKey)
+    }
+
+    private func clearRuntime() {
+        hostServices.removeAll()
         centralObjects.removeAll()
         subscriptions.removeAll()
+        observedHostIDs.removeAll()
         gamepadSubscribers.removeAll()
+        pendingReports.removeAll()
+        latestInput = GamepadReport.zero.data
+        batteryService = nil
+        deviceInformationService = nil
+        batteryCharacteristic = nil
+        commonServicesReady = false
+        isAdvertising = false
+        isReadyToSendNotification = true
+    }
+
+    private func publishHostIfNeeded(_ hostID: UUID) {
+        guard isRunning, commonServicesReady, requestedHosts.contains(hostID),
+            hostServices[hostID] == nil, let peripheralManager,
+            peripheralManager.state == .poweredOn
+        else { return }
+        let session = GamepadHostService(hostID: hostID)
+        hostServices[hostID] = session
+        peripheralManager.add(session.service)
+        trace("publishing controller for host: \(hostID)")
+    }
+
+    private func forgetSubscriptions(for session: GamepadHostService) {
+        for characteristic in session.service.characteristics ?? [] {
+            let key = ObjectIdentifier(characteristic)
+            subscriptions.removeValue(forKey: key)
+            pendingReports.removeValue(for: key)
+        }
+    }
+
+    private func session(for characteristic: CBCharacteristic) -> GamepadHostService? {
+        hostServices.values.first { $0.contains(characteristic) }
+    }
+
+    private func refreshSubscribers() {
+        gamepadSubscribers = Set(
+            hostServices.values.compactMap { session in
+                session.isPublished && requestedHosts.contains(session.hostID)
+                    && subscriptions[ObjectIdentifier(session.input)]?.contains(session.hostID) == true
+                    ? session.hostID : nil
+            })
     }
 
     func sendGamepad(_ report: GamepadReport) {
-        broadcast(report.data, reportID: GamepadHIDProfile.inputReportID)
+        guard isRunning else { return }
+        latestInput = report.data
+        for session in hostServices.values where session.isPublished && requestedHosts.contains(session.hostID) {
+            _ = updateValue(latestInput, for: session.input, owner: session.hostID)
+        }
     }
 
     #if DEBUG
+        /// Exercise the production lifecycle using explicitly supplied local test peer IDs.
+        func runHostLifecycleProbeIfRequested(discovery: GamepadHostDiscovery) async {
+            let arguments = ProcessInfo.processInfo.arguments
+            guard let index = arguments.firstIndex(of: "--host-lifecycle-probe"),
+                arguments.count > index + 2,
+                let first = UUID(uuidString: arguments[index + 1]),
+                let second = UUID(uuidString: arguments[index + 2]), first != second
+            else { return }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            for host in [first, second] {
+                connectHost(host)
+                discovery.rememberHosts([host])
+                discovery.connect(host)
+            }
+            for _ in 0..<60 {
+                if gamepadSubscribers.isSuperset(of: [first, second]) { break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if Task.isCancelled { return }
+            }
+            guard gamepadSubscribers.isSuperset(of: [first, second]) else {
+                print("HOST_PROBE: both hosts did not subscribe")
+                return
+            }
+            for phase in 0..<9 {
+                if Task.isCancelled { return }
+                if phase == 1 || phase == 3 {
+                    disconnectHost(second)
+                    discovery.disconnect(second)
+                }
+                if phase == 5 || phase == 7 {
+                    disconnectHost(first)
+                    discovery.disconnect(first)
+                }
+                if phase == 2 || phase == 4 {
+                    connectHost(second)
+                    discovery.connect(second)
+                }
+                if phase == 6 || phase == 8 {
+                    connectHost(first)
+                    discovery.connect(first)
+                }
+                print("HOST_PROBE: phase \(phase) start \(Date())")
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                for _ in 0..<8 {
+                    sendGamepad(GamepadReport(buttons: 1))
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    sendGamepad(.zero)
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                print("HOST_PROBE: phase \(phase) end subscribers=\(gamepadSubscribers.count) \(Date())")
+            }
+        }
+
         /// USB-launched diagnostic only; never runs during ordinary app use.
         func runGamepadProbeIfRequested() async {
             guard ProcessInfo.processInfo.arguments.contains("--gamepad-probe") else { return }
@@ -133,351 +255,221 @@ final class GamepadPeripheral: NSObject, ObservableObject {
         }
     #endif
 
-    func toggleActive(_ uuid: UUID) {
-        if inactiveCentrals.contains(uuid) {
-            inactiveCentrals.remove(uuid)
-        } else {
-            inactiveCentrals.insert(uuid)
-        }
+    func refreshAdvertising() {
+        guard isRunning, commonServicesReady else { return }
+        peripheralManager?.stopAdvertising()
+        isAdvertising = false
+        startAdvertising()
     }
 
     func updateBatteryLevel(_ level: UInt8) {
-        let clamped = min(level, 100)
-        batteryLevel = clamped
-        let asHIDReport = Data([clamped])
-        if let batteryLevelCharacteristic { _ = updateValue(asHIDReport, for: batteryLevelCharacteristic) }
+        batteryLevel = min(level, 100)
+        if let batteryCharacteristic { _ = updateValue(Data([batteryLevel]), for: batteryCharacteristic) }
     }
 
-    /// if host connects but never subscribes (stale GATT cache), cycle a temp service to fire Service Changed so it re-discovers
-    func scheduleServiceChanged() {
-        guard UserDefaults.standard.bool(forKey: GamepadSettings.useServiceChangedKey), !serviceChangedArmed else {
-            return
-        }
-        serviceChangedArmed = true
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.serviceChangedGrace)
-            self?._cycleServiceChangedIfUnsubscribed()
-        }
-    }
-
-    private func _cycleServiceChangedIfUnsubscribed() {
-        guard subscribedCentrals.isEmpty else { return }
-        _cycleServiceChanged()
-    }
-
-    private func _cycleServiceChanged() {
-        guard let peripheralManager else { return }
-        if let svc = serviceChangedService {
-            peripheralManager.remove(svc)
-            peripheralManager.add(svc)
-        } else {
-            let svc = buildServiceChangedTrigger()
-            serviceChangedService = svc
-            peripheralManager.add(svc)
-        }
-        trace("Service Changed cycled")
-    }
-
-    /// temp service used to perturb the GATT to trigger Service Changed
-    private func buildServiceChangedTrigger() -> CBMutableService {
-        let service = CBMutableService(type: CBUUID(nsuuid: UUID()), primary: true)
-        service.characteristics = [
-            CBMutableCharacteristic(
-                type: CBUUID(nsuuid: UUID()),
-                properties: [.read, .notifyEncryptionRequired],
-                value: nil,
-                permissions: .readEncryptionRequired
-            )
-        ]
-        return service
-    }
-
-    private func installServices() {
-        guard let peripheralManager, !isHIDServiceAdded, batteryService == nil else { return }
-        let battery = buildBatteryService()
-        batteryService = battery
-        peripheralManager.add(battery)
-    }
-
-    private func buildDeviceInfoService() -> CBMutableService {
-        let service = CBMutableService(type: GamepadHIDProfile.deviceInformationService, primary: true)
-        service.characteristics = [
-            CBMutableCharacteristic(
-                type: GamepadHIDProfile.manufacturerName,
-                properties: .read,
-                value: GamepadHIDProfile.manufacturerNameValue,
-                permissions: .readable
-            ),
-            CBMutableCharacteristic(
-                type: GamepadHIDProfile.modelNumber,
-                properties: .read,
-                value: GamepadHIDProfile.modelNumberValue,
-                permissions: .readable
-            ),
-            CBMutableCharacteristic(
-                type: GamepadHIDProfile.pnpID,
-                properties: .read,
-                value: GamepadHIDProfile.pnpIDValue,
-                permissions: .readable
-            ),
-        ]
-        return service
-    }
-
-    private func buildBatteryService() -> CBMutableService {
-        let service = CBMutableService(type: GamepadHIDProfile.batteryService, primary: true)
-        let level = CBMutableCharacteristic(
-            type: GamepadHIDProfile.batteryLevel,
-            properties: [.read, .notifyEncryptionRequired],
-            value: nil,
-            permissions: .readEncryptionRequired
-        )
-        service.characteristics = [level]
-        batteryLevelCharacteristic = level
-        return service
-    }
-
-    private func buildHIDService(includingBattery battery: CBMutableService?) -> CBMutableService {
-        // Keep the tested GATT layout and Xbox report identities unchanged.
-        let service = CBMutableService(type: GamepadHIDProfile.hidService, primary: true)
-        let info = CBMutableCharacteristic(
-            type: GamepadHIDProfile.hidInformation, properties: .read,
-            value: GamepadHIDProfile.hidInformationValue, permissions: .readEncryptionRequired)
-        let map = CBMutableCharacteristic(
-            type: GamepadHIDProfile.reportMap, properties: .read,
-            value: GamepadHIDProfile.reportMapData, permissions: .readEncryptionRequired)
-        let control = CBMutableCharacteristic(
-            type: GamepadHIDProfile.hidControlPoint, properties: .writeWithoutResponse,
-            value: nil, permissions: .writeEncryptionRequired)
-        let input = makeReportCharacteristic(GamepadHIDProfile.inputReportID, type: .input)
-        let output = CBMutableCharacteristic(
-            type: GamepadHIDProfile.report, properties: [.read, .write, .writeWithoutResponse],
-            value: nil, permissions: [.readEncryptionRequired, .writeEncryptionRequired])
-        output.descriptors = [
-            CBMutableDescriptor(
-                type: GamepadHIDProfile.reportReference,
-                value: Data([GamepadHIDProfile.outputReportID, 2]) as NSData)
-        ]
-        service.characteristics = [info, map, control, input, output]
-        reportCharacteristics[GamepadHIDProfile.inputReportID] = input
-        reportCharacteristics[GamepadHIDProfile.outputReportID] = output
-        return service
-    }
-
-    private func makeReportCharacteristic(_ id: UInt8, type: GamepadReportType) -> CBMutableCharacteristic {
-        let char = CBMutableCharacteristic(
-            type: GamepadHIDProfile.report,
-            properties: [.read, .notifyEncryptionRequired],
-            value: nil,
-            permissions: .readEncryptionRequired
-        )
-        char.descriptors = [
-            CBMutableDescriptor(
-                type: GamepadHIDProfile.reportReference, value: NSData(data: Data([id, type.rawValue])))
-        ]
-        return char
-    }
-
-    private func startAdvertisingNow() {
-        guard let peripheralManager, !isAdvertising else { return }
+    private func startAdvertising() {
+        guard isRunning, commonServicesReady, !isAdvertising, let peripheralManager else { return }
         peripheralManager.startAdvertising([
             CBAdvertisementDataLocalNameKey: advertiseLocalName,
-            // hidService must stay first if more than one service is being advertised
             CBAdvertisementDataServiceUUIDsKey: [GamepadHIDProfile.hidService],
         ])
     }
 
-    private func broadcast(_ data: Data, reportID: UInt8) {
-        cachedReports[reportID] = data
-        guard let char = reportCharacteristics[reportID] else { return }
-        _ = updateValue(data, for: char)
+    private func installServices() {
+        guard isRunning, batteryService == nil, let peripheralManager else { return }
+        let service = CBMutableService(type: GamepadHIDProfile.batteryService, primary: true)
+        let level = CBMutableCharacteristic(
+            type: GamepadHIDProfile.batteryLevel, properties: [.read, .notifyEncryptionRequired],
+            value: nil, permissions: .readEncryptionRequired)
+        service.characteristics = [level]
+        batteryCharacteristic = level
+        batteryService = service
+        peripheralManager.add(service)
+    }
+
+    private func addDeviceInformation() {
+        let service = CBMutableService(type: GamepadHIDProfile.deviceInformationService, primary: true)
+        service.characteristics = [
+            CBMutableCharacteristic(
+                type: GamepadHIDProfile.manufacturerName, properties: .read,
+                value: GamepadHIDProfile.manufacturerNameValue, permissions: .readable),
+            CBMutableCharacteristic(
+                type: GamepadHIDProfile.modelNumber, properties: .read,
+                value: GamepadHIDProfile.modelNumberValue, permissions: .readable),
+            CBMutableCharacteristic(
+                type: GamepadHIDProfile.pnpID, properties: .read,
+                value: GamepadHIDProfile.pnpIDValue, permissions: .readable),
+        ]
+        deviceInformationService = service
+        peripheralManager?.add(service)
+    }
+
+    private func recipients(for characteristic: CBMutableCharacteristic, owner: UUID? = nil) -> [CBCentral] {
+        (subscriptions[ObjectIdentifier(characteristic)] ?? [])
+            .filter { owner == nil || $0 == owner }
+            .compactMap { centralObjects[$0] }
     }
 
     @discardableResult
-    private func updateValue(_ data: Data, for char: CBMutableCharacteristic) -> Bool {
-        guard let peripheralManager else { return false }
-        let recipients = activeRecipients(for: char)
-        guard !recipients.isEmpty else { return false }
-        if !isReadyToSendNotification {
-            pendingReports.enqueue((data, char), for: ObjectIdentifier(char))
+    private func updateValue(_ data: Data, for characteristic: CBMutableCharacteristic, owner: UUID? = nil) -> Bool {
+        guard isRunning, let peripheralManager else { return false }
+        let targets = recipients(for: characteristic, owner: owner)
+        guard !targets.isEmpty else { return false }
+        let key = ObjectIdentifier(characteristic)
+        guard isReadyToSendNotification else {
+            pendingReports.enqueue((data, characteristic), for: key)
             return false
         }
-        let accepted = peripheralManager.updateValue(data, for: char, onSubscribedCentrals: recipients)
+        let accepted = peripheralManager.updateValue(data, for: characteristic, onSubscribedCentrals: targets)
         if !accepted {
             isReadyToSendNotification = false
-            pendingReports.enqueue((data, char), for: ObjectIdentifier(char))
+            pendingReports.enqueue((data, characteristic), for: key)
         }
         return accepted
     }
 
-    private func drainPendingBroadcast() {
-        guard let peripheralManager else { return }
-        while let (key, (data, char)) = pendingReports.popFirst() {
-            let recipients = activeRecipients(for: char)
-            guard !recipients.isEmpty else { continue }
-            if !peripheralManager.updateValue(data, for: char, onSubscribedCentrals: recipients) {
-                isReadyToSendNotification = false
-                pendingReports.enqueue((data, char), for: key)
+    private func drainPendingReports() {
+        while let (_, (data, characteristic)) = pendingReports.popFirst() {
+            let owner: UUID?
+            if characteristic === batteryCharacteristic {
+                owner = nil
+            } else {
+                guard let session = session(for: characteristic), session.isPublished,
+                    requestedHosts.contains(session.hostID)
+                else { continue }
+                owner = session.hostID
+            }
+            guard !recipients(for: characteristic, owner: owner).isEmpty else { continue }
+            if !updateValue(data, for: characteristic, owner: owner) {
+                // updateValue keeps this characteristic's latest absolute state queued.
                 return
             }
         }
     }
 
-    private func trace(_ message: @autoclosure () -> String) {
-        guard UserDefaults.standard.bool(forKey: GamepadSettings.developerModeKey) else { return }
-        let text = message()
+    private func observe(_ central: CBCentral) {
+        centralObjects[central.identifier] = central
+        observedHostIDs.insert(central.identifier)
+    }
+
+    private func trace(_ text: String) {
+        guard defaults.bool(forKey: GamepadSettings.developerModeKey) else { return }
         log.info("\(text, privacy: .public)")
         #if DEBUG
             print("GamepadPeripheral: \(text)")
         #endif
     }
-
-    private func _trackInteraction(from central: CBCentral) {
-        centralObjects[central.identifier] = central
-        guard !connectedCentrals.contains(central.identifier) else { return }
-        connectedCentrals.insert(central.identifier)
-        trace("central tracked: \(central.identifier)")
-    }
-
-    private func activeRecipients(for char: CBMutableCharacteristic) -> [CBCentral] {
-        subscribedCentrals.keys
-            .filter { !inactiveCentrals.contains($0) }
-            .filter { subscriptions[$0]?.contains(ObjectIdentifier(char)) == true }
-            .compactMap { centralObjects[$0] }
-    }
-
-    private func reportID(forCharacteristic char: CBCharacteristic) -> UInt8? {
-        for (id, c) in reportCharacteristics where c.uuid == char.uuid && c === char as AnyObject {
-            return id
-        }
-        // fallback for restored characteristics
-        if char.uuid == GamepadHIDProfile.report,
-            let descriptor = (char as? CBMutableCharacteristic)?
-                .descriptors?
-                .first(where: { $0.uuid == GamepadHIDProfile.reportReference }),
-            let value = descriptor.value as? Data,
-            let id = value.first
-        {
-            return id
-        }
-        return nil
-    }
 }
 
 extension GamepadPeripheral: @preconcurrency CBPeripheralManagerDelegate {
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+        guard peripheral === peripheralManager else { return }
         state = peripheral.state
-        trace("CB state -> \(peripheral.state.rawValue)")
-        if peripheral.state == .poweredOn, isHIDServiceAllowed, !isHIDServiceAdded {
+        trace("Bluetooth state: \(state.rawValue)")
+        if state == .poweredOn, isRunning {
+            if withdrawOnPowerOn {
+                peripheral.removeAllServices()
+                withdrawOnPowerOn = false
+            }
             installServices()
-        }
-        if peripheral.state != .poweredOn {
-            isAdvertising = false
+        } else if state != .poweredOn {
+            clearRuntime()
+            withdrawOnPowerOn = true
         }
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: Error?) {
-        if let error {
-            log.error("didAddService(\(service.uuid)) error: \(error.localizedDescription, privacy: .public)")
-            lastError = error.localizedDescription
-            #if DEBUG
-                print("GamepadPeripheral: service registration failed: \(service.uuid): \(error)")
-            #endif
+        guard peripheral === peripheralManager else { return }
+        let session = hostServices.values.first { $0.service === service }
+        let current = service === batteryService || service === deviceInformationService || session != nil
+        guard current else {
+            if error == nil, let obsolete = service as? CBMutableService { peripheral.remove(obsolete) }
             return
         }
-        trace("service added: \(service.uuid)")
-        switch service.uuid {
-        case GamepadHIDProfile.batteryService:
-            let dis = buildDeviceInfoService()
-            deviceInformationService = dis
-            peripheral.add(dis)
-        case GamepadHIDProfile.deviceInformationService:
-            let hid = buildHIDService(includingBattery: batteryService)
-            gamepadService = hid
-            peripheral.add(hid)
-        case GamepadHIDProfile.hidService:
-            isHIDServiceAdded = true
-            startAdvertisingNow()
-        default:
-            break
+        if let error {
+            lastError = error.localizedDescription
+            if let session { hostServices.removeValue(forKey: session.hostID) }
+            trace("service publication failed: \(error)")
+            return
+        }
+        if service === batteryService {
+            addDeviceInformation()
+        } else if service === deviceInformationService {
+            commonServicesReady = true
+            for hostID in requestedHosts.sorted(by: { $0.uuidString < $1.uuidString }) { publishHostIfNeeded(hostID) }
+            startAdvertising()
+        } else if let session {
+            session.isPublished = true
+            refreshSubscribers()
+            trace("controller service ready for host: \(session.hostID)")
         }
     }
 
     func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
-        if let error {
-            isAdvertising = false
-            lastError = error.localizedDescription
-            log.error("startAdvertising error: \(error.localizedDescription, privacy: .public)")
-        } else {
-            isAdvertising = true
-            trace("advertising as \(advertiseLocalName)")
-        }
+        guard peripheral === peripheralManager else { return }
+        isAdvertising = error == nil && isRunning
+        if let error { lastError = error.localizedDescription }
     }
 
     func peripheralManager(
-        _ peripheral: CBPeripheralManager,
-        central: CBCentral,
+        _ peripheral: CBPeripheralManager, central: CBCentral,
         didSubscribeTo characteristic: CBCharacteristic
     ) {
-        _trackInteraction(from: central)
-        subscribedCentrals[central.identifier, default: []].insert(characteristic.uuid)
-        subscriptions[central.identifier, default: []].insert(ObjectIdentifier(characteristic))
-        if reportID(forCharacteristic: characteristic) == GamepadHIDProfile.inputReportID {
-            gamepadSubscribers.insert(central.identifier)
-        }
-        trace("subscribe: \(central.identifier) -> \(characteristic.uuid)")
-        if let id = reportID(forCharacteristic: characteristic),
-            let cached = cachedReports[id],
-            let char = reportCharacteristics[id]
-        {
-            _ = updateValue(cached, for: char)
-        } else if characteristic.uuid == GamepadHIDProfile.batteryLevel, let batteryLevelCharacteristic {
-            _ = updateValue(Data([batteryLevel]), for: batteryLevelCharacteristic)
+        guard peripheral === peripheralManager,
+            characteristic === batteryCharacteristic || session(for: characteristic) != nil
+        else { return }
+        observe(central)
+        subscriptions[ObjectIdentifier(characteristic), default: []].insert(central.identifier)
+        if let session = session(for: characteristic), characteristic === session.input {
+            refreshSubscribers()
+            if central.identifier == session.hostID {
+                _ = updateValue(GamepadReport.zero.data, for: session.input, owner: session.hostID)
+                trace("host subscribed to its gamepad: \(session.hostID)")
+            }
+        } else if characteristic === batteryCharacteristic, let batteryCharacteristic {
+            _ = updateValue(Data([batteryLevel]), for: batteryCharacteristic)
         }
     }
 
     func peripheralManager(
-        _ peripheral: CBPeripheralManager,
-        central: CBCentral,
+        _ peripheral: CBPeripheralManager, central: CBCentral,
         didUnsubscribeFrom characteristic: CBCharacteristic
     ) {
-        trace("unsubscribe: \(central.identifier) <- \(characteristic.uuid)")
-        subscriptions[central.identifier]?.remove(ObjectIdentifier(characteristic))
-        if reportID(forCharacteristic: characteristic) == GamepadHIDProfile.inputReportID {
-            gamepadSubscribers.remove(central.identifier)
-        }
-        if subscriptions[central.identifier]?.isEmpty != false {
-            subscriptions.removeValue(forKey: central.identifier)
-            subscribedCentrals.removeValue(forKey: central.identifier)
-            centralObjects.removeValue(forKey: central.identifier)
-            inactiveCentrals.remove(central.identifier)
-            connectedCentrals.remove(central.identifier)
-            serviceChangedArmed = false
-        } else {
-            // Several report characteristics share 0x2A4D; removing one must not
-            // mark a host disconnected while its other reports remain subscribed.
-            let remaining = subscriptions[central.identifier] ?? []
-            let characteristics =
-                Array(reportCharacteristics.values)
-                + [batteryLevelCharacteristic].compactMap { $0 }
-            subscribedCentrals[central.identifier] = Set(
-                characteristics
-                    .filter { remaining.contains(ObjectIdentifier($0)) }.map(\.uuid))
-        }
+        guard peripheral === peripheralManager else { return }
+        subscriptions[ObjectIdentifier(characteristic)]?.remove(central.identifier)
+        refreshSubscribers()
     }
 
     func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
+        guard peripheral === peripheralManager else { return }
         isReadyToSendNotification = true
-        drainPendingBroadcast()
+        drainPendingReports()
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveRead request: CBATTRequest) {
-        trace("read: \(request.central.identifier) -> \(request.characteristic.uuid)")
-        _trackInteraction(from: request.central)
-        scheduleServiceChanged()
-        let value = readValue(forRequest: request)
+        guard peripheral === peripheralManager else { return }
+        observe(request.central)
+        let value: Data?
+        switch request.characteristic.uuid {
+        case GamepadHIDProfile.batteryLevel: value = Data([batteryLevel])
+        case GamepadHIDProfile.hidInformation: value = GamepadHIDProfile.hidInformationValue
+        case GamepadHIDProfile.reportMap:
+            value = session(for: request.characteristic).map {
+                GamepadHIDProfile.reportMap(for: request.central.identifier, owner: $0.hostID)
+            }
+        case GamepadHIDProfile.report:
+            if let session = session(for: request.characteristic) {
+                value =
+                    request.characteristic === session.input
+                    ? (request.central.identifier == session.hostID ? latestInput : GamepadReport.zero.data)
+                    : Data(repeating: 0, count: 8)
+            } else {
+                value = nil
+            }
+        default: value = nil
+        }
         guard let value else {
-            peripheral.respond(to: request, withResult: .invalidAttributeValueLength)
+            peripheral.respond(to: request, withResult: .attributeNotFound)
             return
         }
         guard request.offset <= value.count else {
@@ -488,32 +480,10 @@ extension GamepadPeripheral: @preconcurrency CBPeripheralManagerDelegate {
         peripheral.respond(to: request, withResult: .success)
     }
 
-    private func readValue(forRequest request: CBATTRequest) -> Data? {
-        switch request.characteristic.uuid {
-        case GamepadHIDProfile.batteryLevel: return Data([batteryLevel])
-        case GamepadHIDProfile.hidInformation: return GamepadHIDProfile.hidInformationValue
-        case GamepadHIDProfile.reportMap: return GamepadHIDProfile.reportMapData
-        case GamepadHIDProfile.manufacturerName: return GamepadHIDProfile.manufacturerNameValue
-        case GamepadHIDProfile.modelNumber: return GamepadHIDProfile.modelNumberValue
-        case GamepadHIDProfile.pnpID: return GamepadHIDProfile.pnpIDValue
-        case GamepadHIDProfile.report:
-            if let id = reportID(forCharacteristic: request.characteristic) {
-                return cachedReports[id] ?? Data()
-            }
-            return Data()
-        default: return Data()
-        }
-    }
-
     func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
-        for request in requests {
-            trace("write: \(request.central.identifier) -> \(request.characteristic.uuid)")
-            _trackInteraction(from: request.central)
-            // Accept the compatible output report; force feedback is not implemented.
-        }
-        if let first = requests.first {
-            peripheral.respond(to: first, withResult: .success)
-        }
+        guard peripheral === peripheralManager else { return }
+        for request in requests { observe(request.central) }
+        // Output reports and suspend/resume are accepted; force feedback is not implemented.
+        if let first = requests.first { peripheral.respond(to: first, withResult: .success) }
     }
-
 }

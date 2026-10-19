@@ -16,10 +16,13 @@ struct GamepadApp: App {
                 .onAppear {
                     // Register connection events before publishing the HID service.
                     hostDiscovery.start()
-                    gamepad.start()
+                    gamepad.startIfNeeded()
                 }
                 #if DEBUG
-                    .task { await gamepad.runGamepadProbeIfRequested() }
+                    .task {
+                        await gamepad.runHostLifecycleProbeIfRequested(discovery: hostDiscovery)
+                        await gamepad.runGamepadProbeIfRequested()
+                    }
                 #endif
         }
     }

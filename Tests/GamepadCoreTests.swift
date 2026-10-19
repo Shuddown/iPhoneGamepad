@@ -3,7 +3,26 @@ import Foundation
 
 @main
 enum GamepadCoreTests {
+    @MainActor
     static func main() {
+        let owner = UUID()
+        let other = UUID()
+        precondition(GamepadHIDProfile.reportMap(for: owner, owner: owner) == XboxBLEProfile.descriptor)
+        let vendor = GamepadHIDProfile.reportMap(for: other, owner: owner)
+        precondition(vendor != XboxBLEProfile.descriptor && reportBitCounts(vendor)["input:1"] == 128)
+        let ownerService = GamepadHostService(hostID: owner)
+        let otherService = GamepadHostService(hostID: other)
+        let reconnected = GamepadHostService(hostID: owner)
+        precondition(ownerService.contains(ownerService.input) && !ownerService.contains(otherService.input))
+        precondition(
+            !reconnected.contains(ownerService.input), "Delayed callbacks must not match a reconnected service")
+        precondition(ownerService.reportMap.value == nil, "The report map must be resolved for the requesting host")
+        var removalQueue = GamepadReportBuffer<String, Int>()
+        removalQueue.enqueue(1, for: "removed")
+        removalQueue.enqueue(2, for: "retained")
+        removalQueue.removeValue(for: "removed")
+        precondition(removalQueue.popFirst()?.1 == 2 && removalQueue.popFirst() == nil)
+
         precondition(
             GamepadHIDProfile.reportMapData.starts(with: Data([5, 1, 9, 5, 0xA1, 1])),
             "Game Pad must be the primary collection for GCController discovery")
@@ -65,15 +84,31 @@ enum GamepadCoreTests {
         precondition(GamepadLayoutConfiguration.load(from: prefs) == .init())
         prefs.removePersistentDomain(forName: "GamepadLayoutTests")
 
-        // Forgiving hits are bounded; blank space and menu keys stay precise.
-        let assisted = GamepadLayout(bounds: editBounds)
+        // Forgiving hits cover the full surface beyond the safe layout bounds.
+        let fullSurface = CGRect(x: 0, y: 0, width: 852, height: 393)
+        let assisted = GamepadLayout(bounds: editBounds, touchBounds: fullSurface)
         let a = assisted.frames[.a]!
         let miss = CGPoint(x: a.midX, y: a.maxY + 12)
         precondition(assisted.control(at: miss, forgiving: false) == nil)
         precondition(assisted.control(at: miss, forgiving: true) == .a)
         let home = assisted.frames[.home]!
-        precondition(assisted.control(at: CGPoint(x: home.maxX + 12, y: home.midY), forgiving: true) == nil)
-        precondition(assisted.control(at: CGPoint(x: editBounds.midX, y: editBounds.maxY - 5), forgiving: true) == nil)
+        precondition(assisted.control(at: CGPoint(x: home.maxX + 12, y: home.midY), forgiving: true) != .home)
+        precondition(assisted.control(at: CGPoint(x: editBounds.midX, y: editBounds.maxY - 5), forgiving: true) != nil)
+        for control in [GamepadControl.l2, .r2, .l3, .r3] {
+            let frame = assisted.frames[control]!
+            let point = CGPoint(x: frame.midX, y: control == .l2 || control == .r2 ? 1 : fullSurface.maxY - 1)
+            precondition(assisted.control(at: point, forgiving: false) == nil)
+            precondition(assisted.control(at: point, forgiving: true) == control)
+            precondition(
+                assisted.isButtonActive(control, at: point, forgiving: true), "A snapped miss must stay pressed")
+        }
+        for x in stride(from: CGFloat(1), to: fullSurface.maxX, by: 17) {
+            for y in stride(from: CGFloat(1), to: fullSurface.maxY, by: 17) {
+                precondition(assisted.control(at: CGPoint(x: x, y: y), forgiving: true) != nil)
+            }
+        }
+        precondition(assisted.control(at: CGPoint(x: -1, y: 100), forgiving: true) == nil)
+        precondition(assisted.control(at: CGPoint(x: home.midX, y: home.midY), forgiving: true) == .home)
         precondition(assisted.control(at: CGPoint(x: a.midX, y: a.midY), forgiving: true) == .a)
 
         let stickFrame = assisted.frames[.leftStick]!
@@ -105,6 +140,18 @@ enum GamepadCoreTests {
                 precondition(bounds.contains(frame), "Clipped control \(control) at \(size)")
                 precondition(frame.width >= 44 && frame.height >= 44)
             }
+            let centerX = bounds.midX
+            for (left, right) in [
+                (GamepadControl.l1, GamepadControl.r1), (.l2, .r2), (.l3, .r3), (.leftStick, .rightStick),
+            ] {
+                precondition(abs(layout.frames[left]!.midX + layout.frames[right]!.midX - centerX * 2) < 0.001)
+            }
+            let padCenter = layout.frames[.dpad]!.midX
+            let faceCenter = layout.frames[.a]!.midX
+            precondition(abs((layout.frames[.l1]!.midX + layout.frames[.l2]!.midX) / 2 - padCenter) < 0.001)
+            precondition(abs((layout.frames[.r1]!.midX + layout.frames[.r2]!.midX) / 2 - faceCenter) < 0.001)
+            precondition(layout.frames[.l3]!.midX == padCenter && layout.frames[.r3]!.midX == faceCenter)
+            precondition(abs(layout.frames[.dpad]!.midY - layout.frames[.x]!.midY) < 0.001)
             precondition(!layout.frames[.leftStick]!.intersects(layout.frames[.dpad]!))
             for control in [GamepadControl.a, .b, .x, .y] {
                 precondition(!layout.frames[.rightStick]!.intersects(layout.frames[control]!))

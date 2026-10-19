@@ -30,3 +30,20 @@ The new automated checks validate hit resolution and stick math, not actual
 human thumb accuracy. Physical move/resize gestures, Save/Cancel interactions,
 rapid combinations, and the subjective feel of forgiving input in an emulator
 still require the user's hands-on check. No such result is claimed here.
+
+
+## Build 37: symmetry and full-surface forgiving input
+
+- Captured the running physical iPhone before and after the change. The updated
+  [gamepad screenshot](gamepad.png) shows shoulder pairs centered above their
+  D-pad/face groups, shared horizontal centers for L3/R3, matching group heights,
+  and mirrored left/right columns. Existing custom placements remain intact.
+- Core checks pass for mirror symmetry, shoulder-pair alignment, unclipped
+  controls and stick/button separation at three landscape sizes.
+- Forgiving checks cover a grid across the entire touch surface, including
+  outside the safe layout bounds, above L2/R2, below L3/R3, and side margins.
+  They also verify that distant snapped button touches remain pressed and
+  Home still requires a direct hit. Standard mode retains its original targets.
+- Signed Debug build, core checks, Swift formatting and whitespace checks pass.
+  Build 37 was installed and launched on the connected iPhone. The actual screen
+  was captured and inspected; human touch accuracy still needs hands-on use.

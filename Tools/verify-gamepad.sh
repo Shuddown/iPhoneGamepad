@@ -7,6 +7,7 @@ gamepad_sources=(
   iPhoneGamepad/Bluetooth/GamepadReportBuffer.swift
   iPhoneGamepad/Bluetooth/XboxBLEProfile.swift
   iPhoneGamepad/Bluetooth/GamepadHIDProfile.swift
+  iPhoneGamepad/Bluetooth/GamepadHostService.swift
   iPhoneGamepad/Controls/GamepadControl.swift
   iPhoneGamepad/Controls/GamepadLayout.swift
   iPhoneGamepad/Controls/GamepadLayoutConfiguration.swift

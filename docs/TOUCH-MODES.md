@@ -25,21 +25,24 @@ The user selected nearby snapping plus floating sticks after reviewing the optio
 
 Standard retains the existing fixed stick centers and hit testing. Forgiving adds:
 
-- Direct hits take priority. Otherwise a miss within 24 points of a gameplay
-  control's rectangular target goes to the nearest target edge. This includes
-  a slightly expanded acquisition area for sticks and D-pad.
-- Home, Start, and Select keep their original direct targets. A 24-point buffer
-  around those keys ignores misses instead of redirecting them to a nearby stick.
+- Direct hits take priority. Every remaining touch on the gamepad surface goes
+  to the nearest gameplay target edge, with no maximum snap distance. This
+  includes space above shoulders/triggers, below L3/R3, beside the pad, and
+  outside the safe-area rectangle used to position the controls. System gestures
+  and toolbar buttons still handle the touches that iOS/SwiftUI delivers to them.
+- Home, Start, and Select keep their original direct targets; misses around them
+  are assigned to gameplay controls instead of expanding the menu targets.
 - Face-button sliding requires the new button to be at least 8 points closer
-  than the current one, reducing changes due to thumb jitter. A held button
-  tolerates drifting 36 points outside its target before releasing.
+  than the current one, reducing changes due to thumb jitter. Held gameplay
+  buttons use their enlarged nearest-target regions too, with 8 points of
+  tolerance at the boundary. They release outside that region or on finger lift.
 - Each stick starts neutral at its finger's initial landing point, and remains
   centered there until release. The visual stick follows that origin. Ownership
   prevents a second finger from taking over a held stick.
 - Mode changes release all controls. Existing touch feedback applies in both modes.
 
-24/8/36 points are initial engineering choices, not values established by a study
-of this app. Snapping cannot infer which of two neighboring buttons was intended.
+The 8-point hysteresis is an engineering choice, not a value established by a
+study of this app. Snapping cannot infer which of two neighboring buttons was intended.
 No input is delayed to guess intent, and no button is held after finger release.
 
 ## Research and alternatives
@@ -59,7 +62,7 @@ Sources reviewed on October 17, 2026:
 3. [Grossman and Balakrishnan, Bubble Cursor (CHI 2005)](https://www.dgp.toronto.edu/papers/tgrossman_CHI2005.pdf)
    adapt the activation area to nearby targets so one target is selectable. Their
    experiments concern pointer acquisition, not eyes-free multi-touch gamepads.
-   Bounded nearest-target snapping here is an adaptation of that idea, not a
+   Nearest-target snapping here is an adaptation of that idea, not a
    reproduction or a claim of equivalent measured benefits.
 4. [Valve touch menus](https://partner.steamgames.com/doc/features/steam_controller/touch_menus)
    offer radial/grid selection and several activation styles, including release.
@@ -75,5 +78,5 @@ gameplay would have no reliable intended-button labels.
 
 Start by testing the chosen mode in the same emulator used for the working
 baseline. Compare missed presses, wrong-button presses, and accidental camera
-movement. Adjust the layout first, then evaluate whether the snap radius and
+movement. Adjust the layout first, then evaluate whether the target regions and
 floating stick travel need individual settings.

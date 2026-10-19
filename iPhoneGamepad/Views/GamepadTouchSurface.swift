@@ -87,7 +87,7 @@ final class GamepadTouchSurfaceView: UIView {
             releaseAll()
         }
         let safeBounds = bounds.inset(by: safeAreaInsets).insetBy(dx: 12, dy: 10)
-        layout = GamepadLayout(bounds: safeBounds, configuration: configuration)
+        layout = GamepadLayout(bounds: safeBounds, configuration: configuration, touchBounds: bounds)
         rebuildAccessibility()
         setNeedsDisplay()
     }
@@ -200,9 +200,7 @@ final class GamepadTouchSurfaceView: UIView {
             // Full press at touch-down. Pull down to feather the analog trigger.
             contact.pressure = max(0, min(1, 1 - (point.y - owner.origin.y) / 110))
         default:
-            let menuKey = [GamepadControl.home, .start, .select].contains(owner.control)
-            let margin: CGFloat = forgiving && !menuKey ? 36 : 18
-            guard layout.frames[owner.control]?.insetBy(dx: -margin, dy: -margin).contains(point) == true else {
+            guard layout.isButtonActive(owner.control, at: point, forgiving: forgiving) else {
                 input.remove(owner.id)
                 return
             }

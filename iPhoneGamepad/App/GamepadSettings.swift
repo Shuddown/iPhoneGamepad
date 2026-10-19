@@ -3,7 +3,8 @@ import Foundation
 enum GamepadSettings {
     static let advertisedNameKey = "Gamepad.advertisedName"
     static let developerModeKey = "Gamepad.developerLogging"
-    static let useServiceChangedKey = "Gamepad.refreshServices"
+    static let knownHostsKey = "Gamepad.knownHosts"
+    static let connectedHostsKey = "Gamepad.connectedHosts"
     static let forgivingKey = "Gamepad.forgiving"
     static let hapticsKey = "Gamepad.haptics"
 
@@ -11,7 +12,7 @@ enum GamepadSettings {
         let defaults = UserDefaults.standard
         defaults.register(defaults: [
             advertisedNameKey: "iPhone Gamepad",
-            useServiceChangedKey: true, hapticsKey: true,
+            hapticsKey: true,
         ])
     }
 }

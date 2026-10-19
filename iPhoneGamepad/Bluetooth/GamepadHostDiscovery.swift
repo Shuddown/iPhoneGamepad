@@ -17,6 +17,8 @@ final class GamepadHostDiscovery: NSObject, ObservableObject {
 
     private let log = Logger(subsystem: "com.shudhesh.iphonegamepad", category: "GamepadHostDiscovery")
     private var centralManager: CBCentralManager?
+    private var scanRequested = false
+    private var rememberedHosts: Set<UUID> = []
     private var peripheralCache: [UUID: CBPeripheral] = [:]
 
     private func trace(_ message: @autoclosure () -> String) {
@@ -38,11 +40,11 @@ final class GamepadHostDiscovery: NSObject, ObservableObject {
     }
 
     func startScan() {
+        scanRequested = true
         guard let centralManager, centralManager.state == .poweredOn else {
             start()
             return
         }
-        discovered.removeAll()
         centralManager.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
@@ -52,6 +54,7 @@ final class GamepadHostDiscovery: NSObject, ObservableObject {
     }
 
     func stopScan() {
+        scanRequested = false
         centralManager?.stopScan()
         isScanning = false
         trace("scan stopped")
@@ -82,7 +85,25 @@ final class GamepadHostDiscovery: NSObject, ObservableObject {
         centralManager.cancelPeripheralConnection(peripheral)
     }
 
-    func refreshConnectedHosts(servicesFilter: [CBUUID] = [GamepadHIDProfile.hidService]) {
+    func disconnectAll() {
+        stopScan()
+        for identifier in connected.union(connecting) { disconnect(identifier) }
+    }
+
+    /// Resolve the same local peer identifiers used by peripheral-role subscribers.
+    /// This retains manual connection controls even while another host is active.
+    func rememberHosts(_ identifiers: Set<UUID>) {
+        rememberedHosts.formUnion(identifiers)
+        guard let centralManager, centralManager.state == .poweredOn else { return }
+        for peer in centralManager.retrievePeripherals(withIdentifiers: Array(identifiers)) {
+            peripheralCache[peer.identifier] = peer
+            upsertDiscovered(peripheral: peer, advertisementData: [:], rssi: 0)
+        }
+    }
+
+    func refreshConnectedHosts(
+        servicesFilter: [CBUUID] = [GamepadHIDProfile.hidService, CBUUID(string: "180A"), CBUUID(string: "1800")]
+    ) {
         guard let centralManager else { return }
         let known = centralManager.retrieveConnectedPeripherals(withServices: servicesFilter)
         for peripheral in known {
@@ -150,6 +171,8 @@ extension GamepadHostDiscovery: @preconcurrency CBCentralManagerDelegate {
                 central.registerForConnectionEvents(options: nil)
             #endif
             refreshConnectedHosts()
+            rememberHosts(rememberedHosts)
+            if scanRequested { startScan() }
         }
         if central.state != .poweredOn {
             isScanning = false
@@ -163,6 +186,7 @@ extension GamepadHostDiscovery: @preconcurrency CBCentralManagerDelegate {
         if let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
             for peripheral in restored {
                 peripheralCache[peripheral.identifier] = peripheral
+                upsertDiscovered(peripheral: peripheral, advertisementData: [:], rssi: 0)
             }
         }
     }
@@ -171,7 +195,7 @@ extension GamepadHostDiscovery: @preconcurrency CBCentralManagerDelegate {
         _ central: CBCentralManager,
         didDiscover peripheral: CBPeripheral,
         advertisementData: [String: Any],
-        rssi rssi: NSNumber
+        rssi: NSNumber
     ) {
         peripheralCache[peripheral.identifier] = peripheral
         upsertDiscovered(

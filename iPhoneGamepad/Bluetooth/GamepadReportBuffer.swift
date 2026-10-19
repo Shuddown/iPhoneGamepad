@@ -15,6 +15,11 @@ struct GamepadReportBuffer<Key: Hashable, Value> {
         return (key, value)
     }
 
+    mutating func removeValue(for key: Key) {
+        values.removeValue(forKey: key)
+        order.removeAll { $0 == key }
+    }
+
     mutating func removeAll() {
         order.removeAll()
         values.removeAll()

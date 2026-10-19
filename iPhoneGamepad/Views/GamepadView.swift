@@ -27,7 +27,8 @@ struct GamepadView: View {
                 } label: {
                     HStack(spacing: 7) {
                         Circle().fill(connected ? Color.mint : .orange).frame(width: 6, height: 6)
-                        Text(connected ? "Connected" : "Connect").font(.system(size: 12, weight: .semibold))
+                        Text(connected ? "Connected" : "Connect").font(
+                            .system(size: 12, weight: .semibold))
                         Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
                     }
                     .padding(.horizontal, 14).frame(height: 36)

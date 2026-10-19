@@ -9,16 +9,28 @@ struct GamepadConnectionView: View {
     @AppStorage(GamepadSettings.hapticsKey) private var haptics = true
     @State private var lastAppliedName = ""
 
+    private var connected: Bool { !gamepad.gamepadSubscribers.isEmpty }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     Label(
-                        gamepad.gamepadSubscribers.isEmpty ? "Ready to connect" : "Gamepad connected",
-                        systemImage: gamepad.gamepadSubscribers.isEmpty
-                            ? "antenna.radiowaves.left.and.right" : "gamecontroller.fill"
+                        connected ? "Connected" : gamepad.isRunning ? "Ready to connect" : "Disconnected",
+                        systemImage: connected ? "gamecontroller.fill" : "antenna.radiowaves.left.and.right"
                     )
-                    .foregroundStyle(gamepad.gamepadSubscribers.isEmpty ? Color.secondary : .mint)
+                    .foregroundStyle(connected ? Color.mint : .secondary)
+                    if gamepad.isRunning {
+                        Button("Disconnect all", role: .destructive) {
+                            gamepad.stop()
+                            hostDiscovery.disconnectAll()
+                        }
+                    } else {
+                        Button("Connect") {
+                            gamepad.start()
+                            startScanning()
+                        }
+                    }
                     if gamepad.state == .unauthorized {
                         Text("Allow Bluetooth access in iPhone Settings to connect your gamepad.")
                     } else if gamepad.state == .poweredOff {
@@ -26,53 +38,55 @@ struct GamepadConnectionView: View {
                     }
                 } footer: {
                     Text(
-                        "Connect to your Mac here, then return to the gamepad. The iPhone may not appear in the Mac’s Bluetooth list."
+                        "Disconnect removes the controller from the selected device. A shared Bluetooth connection may remain for other iPhone features."
                     )
                 }
 
-                Section("Nearby devices") {
-                    ForEach(devices) { device in
-                        Button {
-                            select(device)
-                        } label: {
+                if gamepad.isRunning {
+                    Section("Devices") {
+                        ForEach(devices) { device in
                             HStack(spacing: 12) {
-                                Image(
-                                    systemName: hostDiscovery.connected.contains(device.id)
-                                        ? "link.circle.fill" : "desktopcomputer"
-                                )
-                                .foregroundStyle(hostDiscovery.connected.contains(device.id) ? Color.mint : .secondary)
+                                Image(systemName: "desktopcomputer").foregroundStyle(.secondary)
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(device.name).foregroundStyle(.primary)
-                                    if hostDiscovery.connected.contains(device.id) {
-                                        Text("Connected · tap to disconnect").font(.caption).foregroundStyle(.secondary)
+                                    Text(device.name)
+                                    if gamepad.gamepadSubscribers.contains(device.id) {
+                                        Text("Connected").font(.caption).foregroundStyle(.mint)
+                                    } else if gamepad.requestedHosts.contains(device.id) {
+                                        Text("Connecting…").font(.caption).foregroundStyle(.secondary)
                                     } else if device.rssi != 0 {
                                         Text("Signal \(device.rssi) dBm").font(.caption).foregroundStyle(.secondary)
                                     }
                                 }
                                 Spacer()
-                                if hostDiscovery.connecting.contains(device.id) {
-                                    ProgressView()
+                                if gamepad.requestedHosts.contains(device.id) {
+                                    Button("Disconnect", role: .destructive) {
+                                        gamepad.disconnectHost(device.id)
+                                        hostDiscovery.disconnect(device.id)
+                                    }
+                                    .buttonStyle(.borderless)
                                 } else {
-                                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                                    Button("Connect") {
+                                        gamepad.connectHost(device.id)
+                                        hostDiscovery.connect(device.id)
+                                    }
+                                    .buttonStyle(.borderless)
                                 }
                             }
-                            .contentShape(Rectangle())
                         }
-                        .disabled(hostDiscovery.connecting.contains(device.id))
-                    }
-                    if devices.isEmpty {
-                        HStack {
-                            if hostDiscovery.isScanning { ProgressView() }
-                            Text(hostDiscovery.isScanning ? "Looking for your Mac…" : "No nearby devices found")
-                                .foregroundStyle(.secondary)
+                        if devices.isEmpty {
+                            HStack {
+                                if hostDiscovery.isScanning { ProgressView() }
+                                Text(hostDiscovery.isScanning ? "Looking for devices…" : "No nearby devices found")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                    }
-                    Button {
-                        hostDiscovery.isScanning ? hostDiscovery.stopScan() : hostDiscovery.startScan()
-                    } label: {
-                        Label(
-                            hostDiscovery.isScanning ? "Stop scanning" : "Scan for devices",
-                            systemImage: hostDiscovery.isScanning ? "stop.circle" : "arrow.clockwise")
+                        Button {
+                            hostDiscovery.isScanning ? hostDiscovery.stopScan() : startScanning()
+                        } label: {
+                            Label(
+                                hostDiscovery.isScanning ? "Stop scanning" : "Scan for devices",
+                                systemImage: hostDiscovery.isScanning ? "stop.circle" : "arrow.clockwise")
+                        }
                     }
                 }
 
@@ -104,9 +118,10 @@ struct GamepadConnectionView: View {
         }
         .onAppear {
             lastAppliedName = name
-            if !gamepad.isAdvertising { gamepad.start() }
-            hostDiscovery.startScan()
+            if gamepad.isRunning { startScanning() }
         }
+        .onChange(of: gamepad.knownHostIDs) { hostDiscovery.rememberHosts($0) }
+        .onChange(of: gamepad.observedHostIDs) { hostDiscovery.rememberHosts($0) }
         .onDisappear {
             hostDiscovery.stopScan()
             applyName()
@@ -114,22 +129,15 @@ struct GamepadConnectionView: View {
         .presentationDragIndicator(.visible)
     }
 
-    private var devices: [DiscoveredGamepadHost] {
-        hostDiscovery.discovered.sorted {
-            if hostDiscovery.connected.contains($0.id) != hostDiscovery.connected.contains($1.id) {
-                return hostDiscovery.connected.contains($0.id)
-            }
-            if $0.isNamed != $1.isNamed { return $0.isNamed }
-            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
+    private func startScanning() {
+        hostDiscovery.startScan()
+        hostDiscovery.rememberHosts(gamepad.knownHostIDs.union(gamepad.observedHostIDs))
     }
 
-    private func select(_ device: DiscoveredGamepadHost) {
-        if hostDiscovery.connected.contains(device.id) {
-            gamepad.sendGamepad(.zero)
-            hostDiscovery.disconnect(device.id)
-        } else {
-            hostDiscovery.connect(device.id)
+    private var devices: [DiscoveredGamepadHost] {
+        hostDiscovery.discovered.sorted {
+            if $0.isNamed != $1.isNamed { return $0.isNamed }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
 
@@ -139,7 +147,6 @@ struct GamepadConnectionView: View {
         guard name != lastAppliedName else { return }
         lastAppliedName = name
         gamepad.advertiseLocalName = name
-        gamepad.stop()
-        gamepad.start()
+        gamepad.refreshAdvertising()
     }
 }
